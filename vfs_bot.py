@@ -51,10 +51,8 @@ NO_SLOT = re.compile(
 )
 HAS_SLOT = re.compile(r"earliest available|en erken", re.I)
 
-OUTLOOK_FOLDERS = [
-    "https://outlook.live.com/mail/0/inbox",
-    "https://outlook.live.com/mail/0/junkemail",
-]
+OUTLOOK_MAIL_URL = os.getenv("OUTLOOK_MAIL_URL", "https://outlook.office.com/mail").rstrip("/")
+OUTLOOK_FOLDERS = [f"{OUTLOOK_MAIL_URL}/inbox", f"{OUTLOOK_MAIL_URL}/junkemail"]
 OUTLOOK_ITEM = 'div[role="listbox"] div[role="option"]'
 OUTLOOK_BODY = 'div[role="document"], div[aria-label="Message body"], div[aria-label="İleti gövdesi"]'
 OTP_CODE = re.compile(r"(?<!\d)\d{6}(?!\d)")
