@@ -51,10 +51,22 @@ NO_SLOT = re.compile(
 )
 HAS_SLOT = re.compile(r"earliest available|en erken", re.I)
 
+OUTLOOK_FOLDERS = [
+    "https://outlook.live.com/mail/0/inbox",
+    "https://outlook.live.com/mail/0/junkemail",
+]
+OUTLOOK_ITEM = 'div[role="listbox"] div[role="option"]'
+OUTLOOK_BODY = 'div[role="document"], div[aria-label="Message body"], div[aria-label="İleti gövdesi"]'
+OTP_CODE = re.compile(r"(?<!\d)\d{6}(?!\d)")
+
 DEBUG_DIR = Path("debug")
 
 
 class BotError(Exception):
+    pass
+
+
+class OutlookLoggedOut(BotError):
     pass
 
 
@@ -79,6 +91,7 @@ class Config:
     channel: str
     browser_path: str
     profile_dir: str
+    otp_from_outlook: bool
 
     @classmethod
     def load(cls):
@@ -111,6 +124,7 @@ class Config:
             channel=os.getenv("BROWSER_CHANNEL", "").strip(),
             browser_path=os.getenv("BROWSER_PATH", "").strip(),
             profile_dir=os.getenv("BROWSER_PROFILE_DIR", "browser-profile"),
+            otp_from_outlook=os.getenv("OTP_FROM_OUTLOOK", "true").lower() in ("1", "true", "yes"),
         )
 
 
@@ -216,6 +230,12 @@ def accept_cookies(page: Page):
 
 def login(page: Page, cfg: Config, tg: Telegram):
     log.info("Giriş yapılıyor...")
+    old_code = None
+    if cfg.otp_from_outlook:
+        try:
+            old_code = latest_outlook_code(page.context)
+        except OutlookLoggedOut:
+            pass
     page.goto(f"{cfg.base_url}/login", wait_until="domcontentloaded")
     email = page.locator(LOGIN_EMAIL).first
     try:
@@ -250,7 +270,7 @@ def login(page: Page, cfg: Config, tg: Telegram):
             return
         otp = page.locator(OTP_INPUT).first
         if not otp_done and otp.is_visible():
-            submit_otp(page, otp, tg)
+            submit_otp(page, otp, tg, cfg, old_code)
             otp_done = True
             deadline = time.time() + 90
         check_blocked(page)
@@ -260,17 +280,78 @@ def login(page: Page, cfg: Config, tg: Telegram):
     raise BotError(f"Giriş başarısız: {detail.strip()[:200]}")
 
 
-def submit_otp(page: Page, otp_input, tg: Telegram):
-    log.info("OTP isteniyor, Telegram'dan kod bekleniyor")
-    tg.drain()
-    tg.send("🔐 VFS e-postanıza tek kullanımlık kod (OTP) gönderildi. "
-            "Kodu bu sohbete yazın (5 dakika içinde).")
-    code = tg.wait_for_reply(r"\b\d{4,8}\b", 300)
+def latest_outlook_code(context):
+    """Outlook'taki en yeni VFS mailinden 6 haneli kodu okur (gelen kutusu + gereksiz)."""
+    page = context.new_page()
+    try:
+        for url in OUTLOOK_FOLDERS:
+            page.goto(url, wait_until="domcontentloaded")
+            items = page.locator(OUTLOOK_ITEM)
+            try:
+                items.first.wait_for(timeout=30_000)
+            except PWTimeout:
+                if "/mail/" not in page.url:
+                    raise OutlookLoggedOut("Outlook oturumu kapalı")
+                continue
+            for i in range(min(5, items.count())):
+                item = items.nth(i)
+                label = (item.get_attribute("aria-label") or "") + " " + item.inner_text()
+                if "vfs" not in label.lower():
+                    continue
+                code = OTP_CODE.search(label)
+                if not code:
+                    item.click()
+                    body = page.locator(OUTLOOK_BODY).first
+                    body.wait_for(timeout=15_000)
+                    code = OTP_CODE.search(body.inner_text())
+                if code:
+                    return code.group(0)
+                break
+        return None
+    except OutlookLoggedOut:
+        raise
+    except Exception as e:  # noqa: BLE001 - Outlook okunamazsa Telegram'a düşülür
+        log.warning("Outlook okunamadı: %s", str(e).splitlines()[0])
+        return None
+    finally:
+        page.close()
+
+
+def wait_outlook_code(context, old_code, tg: Telegram, timeout_s=180):
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            code = latest_outlook_code(context)
+        except OutlookLoggedOut:
+            log.warning("Outlook oturumu kapalı: python vfs_bot.py --outlook-login çalıştırın")
+            tg.send("⚠️ Outlook oturumu kapalı, kod otomatik okunamadı. Botu durdurup "
+                    "bilgisayarda şunu çalıştırın: python vfs_bot.py --outlook-login")
+            return None
+        if code and code != old_code:
+            return code
+        time.sleep(10)
+    return None
+
+
+def submit_otp(page: Page, otp_input, tg: Telegram, cfg: Config, old_code=None):
+    code = None
+    if cfg.otp_from_outlook:
+        log.info("OTP isteniyor, Outlook'tan kod okunuyor")
+        code = wait_outlook_code(page.context, old_code, tg)
+        if code:
+            log.info("OTP Outlook'tan alındı")
+        page.bring_to_front()
     if not code:
-        raise BotError("OTP kodu zamanında gelmedi")
+        log.info("OTP isteniyor, Telegram'dan kod bekleniyor")
+        tg.drain()
+        tg.send("🔐 VFS e-postanıza tek kullanımlık kod (OTP) gönderildi. "
+                "Kodu bu sohbete yazın (5 dakika içinde).")
+        code = tg.wait_for_reply(r"\b\d{4,8}\b", 300)
+        if not code:
+            raise BotError("OTP kodu zamanında gelmedi")
+        tg.send("Kod alındı, giriş yapılıyor.")
     otp_input.fill(code)
     page.get_by_role("button", name=OTP_BUTTON).first.click()
-    tg.send("Kod alındı, giriş yapılıyor.")
 
 
 def open_booking_form(page: Page, cfg: Config, tg: Telegram):
@@ -400,6 +481,20 @@ def launch_browser(p, cfg: Config, options: dict):
             log.warning("'%s' açılamadı: %s", name, str(e).splitlines()[0])
 
 
+def outlook_login(cfg: Config):
+    with sync_playwright() as p:
+        context = launch_browser(p, cfg, dict(headless=False, viewport={"width": 1366, "height": 900}))
+        page = context.pages[0] if context.pages else context.new_page()
+        page.goto(OUTLOOK_FOLDERS[0])
+        print("\nAçılan pencerede Outlook hesabınıza giriş yapın ve 'Oturumu açık tut' seçeneğine EVET deyin.")
+        print("Gelen kutunuzu görünce buraya dönüp Enter'a basın.")
+        input()
+        ok = page.locator(OUTLOOK_ITEM).count() > 0 or "live.com/mail" in page.url
+        context.close()
+        print("Outlook bağlandı. ✅" if ok else "Gelen kutusu görünmedi, tekrar deneyin.")
+        return 0 if ok else 1
+
+
 def run(cfg: Config, tg: Telegram, once: bool):
     notified = {}  # merkez -> (tarih, gönderim zamanı)
     errors = 0
@@ -469,6 +564,8 @@ def main():
     parser.add_argument("--once", action="store_true", help="tek kontrol yap ve çık")
     parser.add_argument("--telegram-test", action="store_true", help="test mesajı gönder")
     parser.add_argument("--telegram-chat-id", action="store_true", help="chat id'leri listele")
+    parser.add_argument("--outlook-login", action="store_true",
+                        help="OTP kodlarının okunacağı Outlook hesabına bir kez giriş yap")
     parser.add_argument("--debug", action="store_true", help="ayrıntılı log")
     args = parser.parse_args()
 
@@ -481,6 +578,8 @@ def main():
     if args.telegram_chat_id:
         print_chat_ids()
         return 0
+    if args.outlook_login:
+        return outlook_login(Config.load())
     tg = telegram_from_env()
     if args.telegram_test:
         tg.send("✅ VFS randevu botu: Telegram bağlantısı çalışıyor.")

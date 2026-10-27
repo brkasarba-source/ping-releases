@@ -4,7 +4,7 @@ Bu bot VFS Global'e senin hesabınla belirli aralıklarla giriş yapar. Seçtiğ
 
 - Randevuyu senin yerine **almaz**; sadece haber verir. Mesaj gelince hemen girip randevuyu kendin alırsın.
 - Giriş bilgilerin sadece kendi bilgisayarındaki `.env` dosyasında durur.
-- VFS e-postana tek kullanımlık kod (OTP) gönderirse bot Telegram'dan kodu ister. Kodu sohbete yazman yeterli.
+- VFS e-postana tek kullanımlık kod (OTP) gönderirse bot kodu **Outlook'tan kendisi okur**. Bunun için bir kez `python vfs_bot.py --outlook-login` çalıştırıp Outlook'a "oturumu açık tut" diyerek giriş yapman yeterli. Outlook okunamazsa bot kodu Telegram'dan ister.
 - Cloudflare doğrulaması çıkarsa açık tarayıcı penceresinden bir kez tıklayıp geçebilirsin. Oturum `browser-profile/` klasöründe saklanır.
 
 ## 1. Telegram botu oluştur
