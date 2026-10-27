@@ -51,6 +51,6 @@ Bot ekrana ve `vfs_bot.log` dosyasına log yazar. Bir şeyler ters giderse `debu
 
 ## Önemli notlar
 
-- **Sorgu aralığını çok düşürme.** VFS çok sık istek atan hesapları veya IP'leri saatlerce engelliyor. 5–10 dakika makul bir aralık. Bot engellendiğini anlarsa kendiliğinden 60 dakika bekler.
+- **Sorgu aralığını çok düşürme.** VFS çok sık istek atan hesapları veya IP'leri saatlerce engelliyor. Varsayılan aralık 15–20 dakika. Bot engellendiğini anlarsa kendiliğinden 3 saat bekler.
 - Otomatik sorgu VFS'in kullanım koşullarına aykırı sayılabilir. Bu aracı kendi başvurun için ve makul sıklıkta kullan.
 - VFS sitesinin yapısı zaman zaman değişiyor. Bot bir gün "seçenek bulunamadı" ya da "panel yüklenmedi" gibi hatalar vermeye başlarsa `debug/` klasöründeki ekran görüntülerine bak. `vfs_bot.py` dosyasının başındaki seçicilerin güncellenmesi gerekebilir.

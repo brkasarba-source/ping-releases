@@ -42,7 +42,7 @@ OTP_BUTTON = re.compile(r"verify|doğrula|onayla|sign in|oturum aç|giriş|submi
 NEW_BOOKING = re.compile(r"start new booking|new booking|yeni rezervasyon|yeni randevu", re.I)
 COOKIE_ACCEPT = re.compile(r"accept all|accept|tümünü kabul|kabul et", re.I)
 BLOCKED = re.compile(
-    r"access denied|erişim engellendi|you have been blocked|too many requests|error 1015|403201",
+    r"access denied|erişim engellendi|you have been blocked|too many requests|error 1015|\b4(03|29)\d{3}\b",
     re.I,
 )
 NO_SLOT = re.compile(
@@ -114,9 +114,9 @@ class Config:
             centres=[c.strip() for c in need("VFS_CENTRES").split(",") if c.strip()],
             category=need("VFS_CATEGORY"),
             subcategory=need("VFS_SUBCATEGORY"),
-            interval_min=float(os.getenv("CHECK_INTERVAL_MINUTES", "6")),
-            jitter_min=float(os.getenv("CHECK_JITTER_MINUTES", "2")),
-            backoff_min=float(os.getenv("BLOCKED_BACKOFF_MINUTES", "60")),
+            interval_min=float(os.getenv("CHECK_INTERVAL_MINUTES", "15")),
+            jitter_min=float(os.getenv("CHECK_JITTER_MINUTES", "5")),
+            backoff_min=float(os.getenv("BLOCKED_BACKOFF_MINUTES", "180")),
             remind_min=float(os.getenv("REMIND_MINUTES", "30")),
             centre_wait_s=(int(os.getenv("CENTRE_WAIT_MIN_SECONDS", "45")),
                            int(os.getenv("CENTRE_WAIT_MAX_SECONDS", "60"))),
@@ -281,9 +281,24 @@ def login(page: Page, cfg: Config, tg: Telegram):
     raise BotError(f"Giriş başarısız: {detail.strip()[:200]}")
 
 
+_outlook_page = None
+_outlook_warned = False
+
+
+def outlook_tab(context):
+    """Outlook için tek bir sekme kullanılır; her seferinde yenisi açılmaz."""
+    global _outlook_page
+    if _outlook_page is None or _outlook_page.is_closed():
+        _outlook_page = context.new_page()
+    return _outlook_page
+
+
 def latest_outlook_code(context):
     """Outlook'taki en yeni VFS mailinden 6 haneli kodu okur (gelen kutusu + gereksiz)."""
-    page = context.new_page()
+    page = outlook_tab(context)
+    if page.url.startswith("http") and "/mail/" not in page.url:
+        # Kullanıcı Microsoft giriş sayfasında; yazarken sayfayı değiştirme.
+        raise OutlookLoggedOut("Outlook oturumu kapalı")
     try:
         for url in OUTLOOK_FOLDERS:
             page.goto(url, wait_until="domcontentloaded")
@@ -314,8 +329,6 @@ def latest_outlook_code(context):
     except Exception as e:  # noqa: BLE001 - Outlook okunamazsa Telegram'a düşülür
         log.warning("Outlook okunamadı: %s", str(e).splitlines()[0])
         return None
-    finally:
-        page.close()
 
 
 def wait_outlook_code(context, old_code, tg: Telegram, timeout_s=180):
@@ -324,9 +337,12 @@ def wait_outlook_code(context, old_code, tg: Telegram, timeout_s=180):
         try:
             code = latest_outlook_code(context)
         except OutlookLoggedOut:
-            log.warning("Outlook oturumu kapalı: python vfs_bot.py --outlook-login çalıştırın")
-            tg.send("⚠️ Outlook oturumu kapalı, kod otomatik okunamadı. Botu durdurup "
-                    "bilgisayarda şunu çalıştırın: python vfs_bot.py --outlook-login")
+            global _outlook_warned
+            log.warning("Outlook oturumu kapalı; kod Telegram'dan istenecek")
+            if not _outlook_warned:
+                tg.send("⚠️ Outlook oturumu kapalı. Bot'un Brave penceresindeki Microsoft sekmesinden "
+                        "giriş yapın ('Oturumu açık tut' → Evet). Sonraki girişlerde kod otomatik okunur.")
+                _outlook_warned = True
             return None
         if code and code != old_code:
             return code
@@ -514,6 +530,8 @@ def run(cfg: Config, tg: Telegram, once: bool):
         )
         context = launch_browser(p, cfg, options)
         page = context.pages[0] if context.pages else context.new_page()
+        for old_tab in context.pages[1:]:  # tarayıcının geri yüklediği eski sekmeler
+            old_tab.close()
         if not once:
             tg.send(f"🤖 VFS randevu botu başladı.\nMerkezler: {', '.join(cfg.centres)}\n"
                     f"Kategori: {cfg.category} / {cfg.subcategory}\n"
