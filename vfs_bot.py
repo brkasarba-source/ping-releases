@@ -356,7 +356,10 @@ def submit_otp(page: Page, otp_input, tg: Telegram, cfg: Config, old_code=None):
 
 def open_booking_form(page: Page, cfg: Config, tg: Telegram):
     page.goto(f"{cfg.base_url}/dashboard", wait_until="domcontentloaded")
-    button = page.get_by_role("button", name=NEW_BOOKING).first
+    # Sayfada aynı yazılı gizli öğeler olabilir; sadece görünen buton/yazı aranır.
+    button = (page.get_by_role("button", name=NEW_BOOKING)
+              .or_(page.get_by_text(NEW_BOOKING))
+              .locator("visible=true").first)
     try:
         button.wait_for(timeout=30_000)
     except PWTimeout:
@@ -483,7 +486,8 @@ def launch_browser(p, cfg: Config, options: dict):
 
 def outlook_login(cfg: Config):
     with sync_playwright() as p:
-        context = launch_browser(p, cfg, dict(headless=False, viewport={"width": 1366, "height": 900}))
+        context = launch_browser(p, cfg, dict(headless=False, viewport={"width": 1366, "height": 900},
+                                                  chromium_sandbox=(os.name == "nt")))
         page = context.pages[0] if context.pages else context.new_page()
         page.goto(OUTLOOK_FOLDERS[0])
         print("\nAçılan pencerede Outlook hesabınıza giriş yapın ve 'Oturumu açık tut' seçeneğine EVET deyin.")
@@ -506,6 +510,8 @@ def run(cfg: Config, tg: Telegram, once: bool):
             viewport={"width": 1366, "height": 900},
             locale="tr-TR",
             args=["--disable-blink-features=AutomationControlled"],
+            ignore_default_args=["--enable-automation"],
+            chromium_sandbox=(os.name == "nt"),
         )
         context = launch_browser(p, cfg, options)
         page = context.pages[0] if context.pages else context.new_page()
