@@ -494,7 +494,7 @@ def outlook_login(cfg: Config):
         print("\nAçılan pencerede Outlook hesabınıza giriş yapın ve 'Oturumu açık tut' seçeneğine EVET deyin.")
         print("Gelen kutunuzu görünce buraya dönüp Enter'a basın.")
         input()
-        ok = page.locator(OUTLOOK_ITEM).count() > 0 or "live.com/mail" in page.url
+        ok = page.locator(OUTLOOK_ITEM).count() > 0 or "/mail/" in page.url
         context.close()
         print("Outlook bağlandı. ✅" if ok else "Gelen kutusu görünmedi, tekrar deneyin.")
         return 0 if ok else 1
