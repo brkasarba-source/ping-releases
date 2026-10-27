@@ -86,6 +86,7 @@ class Config:
     jitter_min: float
     backoff_min: float
     remind_min: float
+    centre_wait_s: tuple
     captcha_wait_s: int
     headless: bool
     channel: str
@@ -119,6 +120,8 @@ class Config:
             jitter_min=float(os.getenv("CHECK_JITTER_MINUTES", "2")),
             backoff_min=float(os.getenv("BLOCKED_BACKOFF_MINUTES", "60")),
             remind_min=float(os.getenv("REMIND_MINUTES", "30")),
+            centre_wait_s=(int(os.getenv("CENTRE_WAIT_MIN_SECONDS", "45")),
+                           int(os.getenv("CENTRE_WAIT_MAX_SECONDS", "60"))),
             captcha_wait_s=int(os.getenv("CAPTCHA_WAIT_SECONDS", "300")),
             headless=os.getenv("HEADLESS", "false").lower() in ("1", "true", "yes"),
             channel=os.getenv("BROWSER_CHANNEL", "").strip(),
@@ -523,7 +526,12 @@ def run(cfg: Config, tg: Telegram, once: bool):
         while True:
             delay = cfg.interval_min + random.uniform(0, cfg.jitter_min)
             try:
-                for centre in cfg.centres:
+                for i, centre in enumerate(cfg.centres):
+                    if i:
+                        # VFS merkez değiştirmeden önce 30-45 sn bekletiyor; daha erken sorgu engellenir.
+                        wait = random.randint(*cfg.centre_wait_s)
+                        log.info("Sonraki merkez için %d sn bekleniyor", wait)
+                        page.wait_for_timeout(wait * 1_000)
                     name, available, date, message = check_centre(page, cfg, tg, centre)
                     if available:
                         log.info("✅ %s: uygun randevu var, en erken %s", name, date)
@@ -537,7 +545,6 @@ def run(cfg: Config, tg: Telegram, once: bool):
                     else:
                         log.info("❌ %s: %s", name, message)
                         notified.pop(centre, None)
-                    page.wait_for_timeout(random.randint(3_000, 8_000))
                 errors = 0
                 if error_alerted:
                     tg.send("✅ Bot tekrar normal çalışıyor.")
