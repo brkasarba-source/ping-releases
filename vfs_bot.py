@@ -85,6 +85,7 @@ class Config:
     backoff_min: float
     remind_min: float
     centre_wait_s: tuple
+    heartbeat_h: float
     captcha_wait_s: int
     headless: bool
     channel: str
@@ -118,6 +119,7 @@ class Config:
             jitter_min=float(os.getenv("CHECK_JITTER_MINUTES", "5")),
             backoff_min=float(os.getenv("BLOCKED_BACKOFF_MINUTES", "180")),
             remind_min=float(os.getenv("REMIND_MINUTES", "30")),
+            heartbeat_h=float(os.getenv("HEARTBEAT_HOURS", "3")),
             centre_wait_s=(int(os.getenv("CENTRE_WAIT_MIN_SECONDS", "45")),
                            int(os.getenv("CENTRE_WAIT_MAX_SECONDS", "60"))),
             captcha_wait_s=int(os.getenv("CAPTCHA_WAIT_SECONDS", "300")),
@@ -516,7 +518,47 @@ def outlook_login(cfg: Config):
         return 0 if ok else 1
 
 
+class Status:
+    def __init__(self):
+        self.started = datetime.now()
+        self.checks = 0
+        self.last = "Henüz kontrol yapılmadı"
+        self.next_at = None
+        self.heartbeat_at = time.time()
+
+    def text(self, title):
+        up = datetime.now() - self.started
+        hours, minutes = divmod(int(up.total_seconds()) // 60, 60)
+        lines = [title, f"Çalışma süresi: {hours} sa {minutes} dk", f"Tamamlanan tur: {self.checks}",
+                 f"Son durum: {self.last}"]
+        if self.next_at:
+            lines.append(f"Sonraki kontrol: {self.next_at:%H:%M}")
+        return "\n".join(lines)
+
+
+STATUS_COMMAND = re.compile(r"^/?(durum|status)\b", re.I)
+
+
+def idle(tg: Telegram, status: Status, cfg: Config, seconds: float):
+    """Bir sonraki kontrole kadar bekler; bu sırada /durum komutunu yanıtlar ve düzenli durum mesajı atar."""
+    deadline = time.time() + seconds
+    while (remaining := deadline - time.time()) > 0:
+        if cfg.heartbeat_h > 0 and time.time() - status.heartbeat_at >= cfg.heartbeat_h * 3600:
+            tg.send(status.text("💓 Bot çalışıyor"))
+            status.heartbeat_at = time.time()
+        try:
+            for upd in tg.updates(timeout=int(min(25, max(1, remaining)))):
+                msg = upd.get("message") or {}
+                if (str(msg.get("chat", {}).get("id")) == tg.chat_id
+                        and STATUS_COMMAND.match(msg.get("text", "").strip())):
+                    tg.send(status.text("💓 Bot çalışıyor"))
+        except requests.RequestException as e:
+            log.warning("Telegram mesajları okunamadı: %s", e)
+            time.sleep(min(30, max(0, remaining)))
+
+
 def run(cfg: Config, tg: Telegram, once: bool):
+    status = Status()
     notified = {}  # merkez -> (tarih, gönderim zamanı)
     errors = 0
     error_alerted = False
@@ -535,11 +577,14 @@ def run(cfg: Config, tg: Telegram, once: bool):
         if not once:
             tg.send(f"🤖 VFS randevu botu başladı.\nMerkezler: {', '.join(cfg.centres)}\n"
                     f"Kategori: {cfg.category} / {cfg.subcategory}\n"
-                    f"Kontrol aralığı: ~{cfg.interval_min:g} dk")
+                    f"Kontrol aralığı: ~{cfg.interval_min:g} dk\n\n"
+                    f"Durumu sormak için istediğin zaman /durum yaz.")
+            tg.drain()
 
         while True:
             delay = cfg.interval_min + random.uniform(0, cfg.jitter_min)
             try:
+                results = []
                 for i, centre in enumerate(cfg.centres):
                     if i:
                         # VFS merkez değiştirmeden önce 30-45 sn bekletiyor; daha erken sorgu engellenir.
@@ -549,6 +594,7 @@ def run(cfg: Config, tg: Telegram, once: bool):
                     name, available, date, message = check_centre(page, cfg, tg, centre)
                     if available:
                         log.info("✅ %s: uygun randevu var, en erken %s", name, date)
+                        results.append(f"{centre}: VAR ({date})")
                         last = notified.get(centre)
                         if (not last or last[0] != date
                                 or time.time() - last[1] > cfg.remind_min * 60):
@@ -558,7 +604,10 @@ def run(cfg: Config, tg: Telegram, once: bool):
                             notified[centre] = (date, time.time())
                     else:
                         log.info("❌ %s: %s", name, message)
+                        results.append(f"{centre}: yok")
                         notified.pop(centre, None)
+                status.checks += 1
+                status.last = f"{datetime.now():%H:%M} → " + ", ".join(results)
                 errors = 0
                 if error_alerted:
                     tg.send("✅ Bot tekrar normal çalışıyor.")
@@ -568,10 +617,12 @@ def run(cfg: Config, tg: Telegram, once: bool):
                 save_debug(page, "blocked")
                 tg.send(f"⛔ {e}. {cfg.backoff_min:g} dakika sonra tekrar denenecek.")
                 delay = cfg.backoff_min
+                status.last = f"{datetime.now():%H:%M} → VFS engelledi, bekleniyor"
                 if once:
                     return 1
             except Exception as e:  # noqa: BLE001 - döngü her hatadan sonra devam etmeli
                 errors += 1
+                status.last = f"{datetime.now():%H:%M} → hata: {str(e).splitlines()[0][:100]}"
                 log.exception("Kontrol başarısız (%d. ardışık hata)", errors)
                 save_debug(page, "error")
                 if errors >= 3 and not error_alerted:
@@ -583,7 +634,8 @@ def run(cfg: Config, tg: Telegram, once: bool):
             if once:
                 return 0
             log.info("Sonraki kontrol %.1f dakika sonra", delay)
-            time.sleep(delay * 60)
+            status.next_at = datetime.fromtimestamp(time.time() + delay * 60)
+            idle(tg, status, cfg, delay * 60)
 
 
 def main():
