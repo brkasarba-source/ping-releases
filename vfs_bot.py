@@ -77,6 +77,7 @@ class Config:
     captcha_wait_s: int
     headless: bool
     channel: str
+    browser_path: str
     profile_dir: str
 
     @classmethod
@@ -108,6 +109,7 @@ class Config:
             captcha_wait_s=int(os.getenv("CAPTCHA_WAIT_SECONDS", "300")),
             headless=os.getenv("HEADLESS", "false").lower() in ("1", "true", "yes"),
             channel=os.getenv("BROWSER_CHANNEL", "").strip(),
+            browser_path=os.getenv("BROWSER_PATH", "").strip(),
             profile_dir=os.getenv("BROWSER_PROFILE_DIR", "browser-profile"),
         )
 
@@ -368,20 +370,49 @@ def save_debug(page: Page, label: str):
 # Ana döngü
 # --------------------------------------------------------------------------- #
 
+BRAVE_PATHS = [
+    Path(os.getenv("PROGRAMFILES", r"C:\Program Files")) / "BraveSoftware/Brave-Browser/Application/brave.exe",
+    Path(os.getenv("PROGRAMFILES(X86)", r"C:\Program Files (x86)")) / "BraveSoftware/Brave-Browser/Application/brave.exe",
+    Path(os.getenv("LOCALAPPDATA", "")) / "BraveSoftware/Brave-Browser/Application/brave.exe",
+    Path("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
+]
+
+
+def launch_browser(p, cfg: Config, options: dict):
+    """Sırasıyla dener: BROWSER_PATH, BROWSER_CHANNEL (ör. chrome), kurulu Brave, yerleşik Chromium."""
+    attempts = []
+    if cfg.browser_path:
+        attempts.append((cfg.browser_path, {"executable_path": cfg.browser_path}))
+    if cfg.channel:
+        attempts.append((cfg.channel, {"channel": cfg.channel}))
+    brave = next((b for b in BRAVE_PATHS if b.is_file()), None)
+    if brave:
+        attempts.append(("Brave", {"executable_path": str(brave)}))
+    attempts.append(("yerleşik Chromium", {}))
+    for name, extra in attempts:
+        try:
+            context = p.chromium.launch_persistent_context(cfg.profile_dir, **extra, **options)
+            log.info("Tarayıcı: %s", name)
+            return context
+        except Exception as e:  # noqa: BLE001 - sıradaki tarayıcıyı dene
+            if not extra:
+                raise
+            log.warning("'%s' açılamadı: %s", name, str(e).splitlines()[0])
+
+
 def run(cfg: Config, tg: Telegram, once: bool):
     notified = {}  # merkez -> (tarih, gönderim zamanı)
     errors = 0
     error_alerted = False
 
     with sync_playwright() as p:
-        context = p.chromium.launch_persistent_context(
-            cfg.profile_dir,
+        options = dict(
             headless=cfg.headless,
-            channel=cfg.channel or None,
             viewport={"width": 1366, "height": 900},
             locale="tr-TR",
             args=["--disable-blink-features=AutomationControlled"],
         )
+        context = launch_browser(p, cfg, options)
         page = context.pages[0] if context.pages else context.new_page()
         if not once:
             tg.send(f"🤖 VFS randevu botu başladı.\nMerkezler: {', '.join(cfg.centres)}\n"
