@@ -1,0 +1,6 @@
+.env
+browser-profile/
+debug/
+vfs_bot.log
+__pycache__/
+.venv/
