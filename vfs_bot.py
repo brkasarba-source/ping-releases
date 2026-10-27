@@ -46,7 +46,7 @@ BLOCKED = re.compile(
     re.I,
 )
 NO_SLOT = re.compile(
-    r"no appointment slots|no slots|uygun randevu (yok|bulunma)|randevu bulunmamaktadır|müsait randevu yok",
+    r"no appointment slots|no slots|uygun randevu (yok|bulun)|randevu bulunmamaktadır|müsait randevu yok",
     re.I,
 )
 HAS_SLOT = re.compile(r"earliest available|en erken", re.I)
