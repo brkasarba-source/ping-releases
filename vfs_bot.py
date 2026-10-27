@@ -366,9 +366,9 @@ def open_booking_form(page: Page, cfg: Config, tg: Telegram):
     try:
         button.wait_for(timeout=30_000)
     except PWTimeout:
+        # Giriş sayfası ya da "Oturum süresi doldu" sayfası: yeniden giriş yap.
         check_blocked(page)
-        if "/login" not in page.url and not page.locator(LOGIN_EMAIL).count():
-            raise BotError("Panel sayfası yüklenmedi")
+        log.info("Oturum kapalı (%s)", page.url)
         login(page, cfg, tg)
         button.wait_for(timeout=30_000)
     button.click()
@@ -512,8 +512,6 @@ def run(cfg: Config, tg: Telegram, once: bool):
             headless=cfg.headless,
             viewport={"width": 1366, "height": 900},
             locale="tr-TR",
-            args=["--disable-blink-features=AutomationControlled"],
-            ignore_default_args=["--enable-automation"],
             chromium_sandbox=(os.name == "nt"),
         )
         context = launch_browser(p, cfg, options)
